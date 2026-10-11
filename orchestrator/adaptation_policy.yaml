@@ -1,0 +1,9 @@
+adaptation:
+  default: persistent_memory
+  working_context: {use_for: [temporary_task_state, session_only_constraints]}
+  persistent_memory: {use_for: [project_facts, user_authorized_preferences, observed_outcomes, validated_procedures]}
+  parameter_learning:
+    trigger: repeated_capability_gap
+    prerequisites: [context_and_retrieval_baselines_tested, validated_examples_available, training_data_use_authorized, held_out_evaluation_available, rollback_target_available]
+    execution: background_only
+    deployment: approval_required

@@ -1,0 +1,2 @@
+online: [observe, retrieve, reason_and_act, evaluate, memory_writer]
+background: [replay_selector, consolidation, contradiction_review, learning_proposer, learning_validator, release_manager]
