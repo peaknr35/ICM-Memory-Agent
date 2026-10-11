@@ -111,15 +111,16 @@ class Releases:
         with open(tmp, "w") as f:
             json.dump({"release_id": rid, "previous_release": prev}, f)
         os.replace(tmp, self.active)              # atomic pointer swap
-    def publish(self, store, scope, model=None, embed=None):
-        """Pin approved claims + lineage into a new, immutable manifest and publish it."""
+    def publish(self, store, scope, model=None, embed=None, adapter=None):
+        """Pin approved claims + lineage into a new, immutable manifest and publish it.
+        `adapter` is the deployed adapter id (Stage 4) or None for a store-only release."""
         prev = self._read_active().get("release_id")
         rid = "release_%04d" % sum(1 for f in os.listdir(self.manifests) if f.endswith(".json"))
         approved = store.claims(scope, status="approved")
         manifest = {
             "id": rid, "ts": time.time(), "previous_release": prev,
             "pins": {"workspace": scope, "policy": "v0.1", "model": model,
-                     "adapter": None, "retrieval": embed, "permissions": "default"},
+                     "adapter": adapter, "retrieval": embed, "permissions": "default"},
             "memory": [{"claim_id": c["id"], "claim": c["claim"], "revision": c["revision"],
                         "supersedes": c["supersedes"], "source_ids": c["source_ids"]} for c in approved],
             "source_ids": sorted({s for c in approved for s in c["source_ids"]}),

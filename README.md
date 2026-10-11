@@ -43,6 +43,7 @@ Retrieved items are marked untrusted; any that match known prompt-injection cues
 - **`runtime/models.py`** — pluggable reasoning backends behind one `llm(goal, obs, evidence)` interface.
 - **`runtime/embeddings.py`** — pluggable embedding backends behind one `embed(text) -> list[float]` interface.
 - **`runtime/background.py`** — the Stage-3 background pipeline: consolidation, contradiction review, revisions/lineage, and versioned releases (store-only, no weights).
+- **`runtime/learning.py`** — the Stage-4 adapter-training pipeline: the gated path to *weight* changes (diagnosis → proposal → train → validate → approval-gated deploy → rollback).
 
 ## Model backends
 
@@ -76,7 +77,7 @@ pip install pytest
 pytest
 ```
 
-**18 tests, all passing.** They cover the online loop (delayed recall, temporary items *not* stored, injection filtering, scope isolation, complete deletion with derived-claim cascade), the llm/embedder backends and prompt construction, the delayed-recall + pattern-separation evals below, and the background pipeline (consolidation ≥2 sources, snapshot-gated approval, contradiction preservation, revision lineage, release publish + rollback).
+**25 tests, all passing.** They cover the online loop (delayed recall, temporary items *not* stored, injection filtering, scope isolation, complete deletion with derived-claim cascade), the llm/embedder backends and prompt construction, the delayed-recall + pattern-separation evals below, the background pipeline (consolidation ≥2 sources, snapshot-gated approval, contradiction preservation, revision lineage, release publish + rollback), and the Stage-4 training gate (eligibility, validation, approval-gated deploy, rollback, retire-on-delete).
 
 ## Evaluations
 
@@ -95,14 +96,25 @@ pytest
 4. **evaluation gate** (`approve_claim`) — a candidate becomes `approved` only if it isn't contradicted **and** the episodic snapshot still matches the one it was built against (a changed store forces revalidation). `revise_claim` records corrections as new revisions that `supersede` the old one, which is kept (`policies/memory_revision.md`).
 5. **release_manager** (`Releases`) — pin the approved claims + lineage into an immutable, versioned manifest (`manifests/release_NNNN.json`) and publish it atomically via `active.json`; `rollback()` repoints to the previous release. Manifests pin workspace/policy/memory/model/adapter/retrieval/permissions — `adapter` is always `null` here (weights are Stage 4).
 
-`learning_proposer` / `learning_validator` (adapter training) are Stage 4 and are **not** executed by this pipeline.
+`learning_proposer` / `learning_validator` (adapter training) are Stage 4, below.
+
+## Adapter training (Stage 4 — the gated path to weight changes)
+
+`runtime/learning.py` is the **only** path that changes model weights, and it is heavily gated. This stage implements the *governance*; the actual training is a pluggable stub (`stub_trainer` emits an adapter manifest with `weights: null` — no real LoRA/PEFT run in this skeleton).
+
+1. **diagnosis** (`diagnose`) — the 5-question gate from `policies/training_eligibility.md` / `adaptation_policy.yaml`: a true repeated capability gap, context+retrieval **baselines tried first** (memory before weights), validated examples, authorized data, a held-out eval, and a rollback target. All must pass.
+2. **learning_proposer** (`propose_training`) — writes a candidate `TrainingProposal` with data lineage **only if** the diagnosis passes; otherwise it refuses and returns the failed prerequisites.
+3. **train_adapter** — background-only; produces an adapter manifest (fingerprint + `source_ids` lineage, `weights: null`).
+4. **learning_validator** (`validate_adapter`) — runs a held-out eval with a **separate** evaluator (the trainer never grades its own work); `validated` only if it improves without regressions, else `rejected`.
+5. **deploy_adapter** — **approval-required**: refuses unless the adapter is validated *and* `approved=True`, then publishes a new release pinning the adapter (the previous release is the rollback target). `Releases.rollback()` reverts the adapter pin.
+6. **retire_adapters_for** — `policies/retention_and_deletion.md`: deleting training data retires any adapter trained on it (needs retrain).
 
 ## Roadmap / build order
 
 1. Online loop — **done** (v0.1: SQLite episodic store, injection filter).
 2. Real reasoning backends — **done** (stub/ollama/claude/gemini); retrieval embeddings — **done** (hash/keyword/ollama/gemini/voyage/sentence-transformers in `runtime/embeddings.py`).
 3. Background pipeline — **done** (consolidation, contradiction review, revisions + lineage, versioned releases + rollback in `runtime/background.py`; store-only).
-4. Adapter training pipeline — gated by `policies/training_eligibility.md` (not yet executed).
+4. Adapter training pipeline — **done** as governance (`runtime/learning.py`: eligibility gate, proposal, validation, approval-gated deploy, rollback, retire-on-delete); the trainer itself is a stub (no real weights trained).
 
 ## Status & limits
 
@@ -110,6 +122,6 @@ pytest
 - The default embedder (`hash`) is structural, not semantic: it matches shared tokens, so paraphrase/synonym recall needs a real embedding backend (ollama/gemini/voyage/sentence-transformers).
 - The background pipeline (`runtime/background.py`) is implemented but runs **on demand** (`run_background`), not auto-triggered by the online loop. Consolidation summaries are deterministic (token theme + representative episode), not model-written; approval is a stand-in for the evaluation stage (accept valid, non-contradicted candidates).
 - Approved semantic claims and published releases are not yet wired back into online retrieval — the online loop still retrieves from the episodic store only.
-- The Stage-4 adapter training pipeline (`learning_proposer`/`learning_validator`) is not executed.
+- The Stage-4 pipeline implements the training **governance** (gate, proposal, validation, approval-gated deploy, rollback, retire-on-delete), but the trainer is a stub — no real adapter weights are produced. A real LoRA/PEFT trainer would be a pluggable `MEMORY_TRAIN_BACKEND`.
 - `memory_writer` is specified as an agent, but the runner currently appends episodes directly.
 - Placeholders still to fill: each agent's `examples.md`, the real fields in the `contracts/` schemas, and `project/identity.md`.
