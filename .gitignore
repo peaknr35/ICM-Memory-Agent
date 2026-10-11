@@ -1,7 +1,19 @@
-memory/
-learning/datasets/
-learning/adapters/
-runtime/traces/
+# Python
+__pycache__/
 *.db
 .env
-__pycache__/
+
+# pytest cache
+.pytest_cache/
+/CACHEDIR.TAG
+
+# Runtime data: ignore contents, keep the scaffold dirs (.gitkeep)
+memory/**
+!memory/**/
+learning/datasets/**
+!learning/datasets/**/
+learning/adapters/**
+!learning/adapters/**/
+runtime/traces/**
+!runtime/traces/**/
+!**/.gitkeep
