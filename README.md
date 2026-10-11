@@ -42,6 +42,7 @@ Retrieved items are marked untrusted; any that match known prompt-injection cues
 - **`runtime/runner.py`** — runs the loop, filters untrusted evidence, records the evidence trail.
 - **`runtime/models.py`** — pluggable reasoning backends behind one `llm(goal, obs, evidence)` interface.
 - **`runtime/embeddings.py`** — pluggable embedding backends behind one `embed(text) -> list[float]` interface.
+- **`runtime/background.py`** — the Stage-3 background pipeline: consolidation, contradiction review, revisions/lineage, and versioned releases (store-only, no weights).
 
 ## Model backends
 
@@ -75,7 +76,7 @@ pip install pytest
 pytest
 ```
 
-**10 tests, all passing.** They check delayed recall, temporary items *not* being stored, injection filtering, scope isolation, complete deletion (with derived-claim cascade), the default llm/embedder backends, unknown-backend rejection, prompt construction, and the delayed-recall + pattern-separation evals below.
+**18 tests, all passing.** They cover the online loop (delayed recall, temporary items *not* stored, injection filtering, scope isolation, complete deletion with derived-claim cascade), the llm/embedder backends and prompt construction, the delayed-recall + pattern-separation evals below, and the background pipeline (consolidation ≥2 sources, snapshot-gated approval, contradiction preservation, revision lineage, release publish + rollback).
 
 ## Evaluations
 
@@ -84,17 +85,31 @@ pytest
 - **Delayed recall** — store a randomized `cedar-<suffix>` fact, run unrelated turns, then reset to a fresh agent context keeping only the persistent store, and ask for the label. It passes only if retrieval returns the fact within the evidence budget, the exact label is reproduced, the answer's evidence reference resolves back to the originating episode, deleting that episode yields `"unknown"` (not a guess), and no semantic/weight update occurs merely because the fact was retrieved.
 - **Pattern separation** — two near-duplicate labels; the cue must retrieve the *right* one.
 
+## Background pipeline
+
+`runtime/background.py` runs the background stages asynchronously over a snapshot of the store — it only changes the store, never model weights. Call `run_background(store, scope, releases=Releases(dir))`. Stages, in `routing.yaml` order:
+
+1. **replay_selector** — cluster episodes worth revisiting by token overlap.
+2. **consolidation** — turn each cluster of **≥2 independent episodes** into a *candidate* semantic claim that cites its sources (per `policies/consolidation.md`). Raw episodes stay immutable; claims are a separate layer.
+3. **contradiction_review** — flag pairs of claims that share a subject but assert different specifics; **both are preserved** (status `contradicted`), never silently overwritten.
+4. **evaluation gate** (`approve_claim`) — a candidate becomes `approved` only if it isn't contradicted **and** the episodic snapshot still matches the one it was built against (a changed store forces revalidation). `revise_claim` records corrections as new revisions that `supersede` the old one, which is kept (`policies/memory_revision.md`).
+5. **release_manager** (`Releases`) — pin the approved claims + lineage into an immutable, versioned manifest (`manifests/release_NNNN.json`) and publish it atomically via `active.json`; `rollback()` repoints to the previous release. Manifests pin workspace/policy/memory/model/adapter/retrieval/permissions — `adapter` is always `null` here (weights are Stage 4).
+
+`learning_proposer` / `learning_validator` (adapter training) are Stage 4 and are **not** executed by this pipeline.
+
 ## Roadmap / build order
 
 1. Online loop — **done** (v0.1: SQLite episodic store, injection filter).
 2. Real reasoning backends — **done** (stub/ollama/claude/gemini); retrieval embeddings — **done** (hash/keyword/ollama/gemini/voyage/sentence-transformers in `runtime/embeddings.py`).
-3. Background pipeline — consolidation + lineage + versioned memory releases.
-4. Adapter training pipeline — gated by `policies/training_eligibility.md`.
+3. Background pipeline — **done** (consolidation, contradiction review, revisions + lineage, versioned releases + rollback in `runtime/background.py`; store-only).
+4. Adapter training pipeline — gated by `policies/training_eligibility.md` (not yet executed).
 
 ## Status & limits
 
 - The default `llm` is a stub; the Ollama/Claude/Gemini backends are wired but not exercised by the tests.
 - The default embedder (`hash`) is structural, not semantic: it matches shared tokens, so paraphrase/synonym recall needs a real embedding backend (ollama/gemini/voyage/sentence-transformers).
-- The background agents, consolidation, lineage, and training pipeline exist as folders and policies but aren't executed by the runner yet.
+- The background pipeline (`runtime/background.py`) is implemented but runs **on demand** (`run_background`), not auto-triggered by the online loop. Consolidation summaries are deterministic (token theme + representative episode), not model-written; approval is a stand-in for the evaluation stage (accept valid, non-contradicted candidates).
+- Approved semantic claims and published releases are not yet wired back into online retrieval — the online loop still retrieves from the episodic store only.
+- The Stage-4 adapter training pipeline (`learning_proposer`/`learning_validator`) is not executed.
 - `memory_writer` is specified as an agent, but the runner currently appends episodes directly.
 - Placeholders still to fill: each agent's `examples.md`, the real fields in the `contracts/` schemas, and `project/identity.md`.
