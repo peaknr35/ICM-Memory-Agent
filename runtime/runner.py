@@ -1,10 +1,12 @@
 from .storage import Store
 from .router import route
 from .models import make_llm
+from .embeddings import make_embedder
 INJECTION=("ignore previous","disregard instructions","system prompt")
 class Runner:
-    def __init__(self, store=None, llm=None, backend=None, scope="default", budget=3):
-        self.store=store or Store(); self.scope=scope; self.budget=budget
+    def __init__(self, store=None, llm=None, backend=None, embed_backend=None, scope="default", budget=3):
+        self.store=store or Store(embedder=make_embedder(embed_backend) if embed_backend else None)  # default hash embeddings
+        self.scope=scope; self.budget=budget
         self.llm=llm or make_llm(backend)   # stub by default; backend= or MEMORY_LLM_BACKEND selects ollama/claude/gemini
         self.working={}; self.trace=[]
     def step(self, goal, obs, evaluate=lambda a:"ok", ephemeral=False):
