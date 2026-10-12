@@ -8,19 +8,24 @@ are Stage 4 and are NOT executed here.
 Invariants (policies/):
 - A semantic claim needs >= 2 independent source episodes (consolidation.md).
 - Raw episodes are immutable; claims are separate and cite sources (evidence.md).
-- Proposals are candidates until approved; approval revalidates the snapshot the
-  proposal was built against, so a changed store is never silently overwritten.
+- Proposals are candidates until approved; approval requires provenance that
+  resolves to live episodes and revalidates the snapshot the proposal was built
+  against, so a changed store is never silently overwritten.
 - Contradictions preserve BOTH claims and their sources, flagged not deleted.
 - Corrections are new revisions that supersede; the old revision is kept
   (memory_revision.md).
 - Releases are versioned and published atomically via active.json; rollback
   repoints to the previous release (preserve_prior_versions).
+- The pipeline is repeat-safe: re-running it on an unchanged store proposes
+  nothing new and publishes nothing new.
 """
 import os, re, json, time
 
 _TOK = re.compile(r"[a-z0-9]+")
+_STOP = frozenset("the and for with that this are was were has have had not but you your our its "
+                  "from into about than then".split())
 def _toks(s):
-    return {w for w in _TOK.findall(s.lower()) if len(w) >= 3}
+    return {w for w in _TOK.findall(s.lower()) if len(w) >= 3 and w not in _STOP}
 
 def _jaccard(a, b):
     return len(a & b) / len(a | b) if (a or b) else 0.0
@@ -51,34 +56,59 @@ def _summarize(group):
     return f"[{len(group)} episodes: {theme}] {rep}"
 
 def consolidate(store, scope, summarize=_summarize):
-    """Propose one candidate claim per cluster of >= 2 independent episodes."""
+    """Propose one candidate claim per cluster of >= 2 independent episodes.
+
+    Repeat-safe: a cluster that already has a live claim is skipped, and a cluster
+    that has grown since its claim was made is proposed as a new revision that
+    supersedes the old one (memory_revision.md) instead of a duplicate."""
     snap = store.snapshot(scope); made = []
+    live = [c for c in store.claims(scope) if c["status"] != "superseded"]
     for group in replay_selector(store, scope):
-        sids = sorted({e["id"] for e in group})
-        if len(sids) < 2:                     # policy: >= 2 independent sources
+        sids = {e["id"] for e in group}
+        if len(sids) < 2:                                          # policy: >= 2 independent sources
             continue
-        made.append(store.propose_claim(scope, summarize(group), sids, snapshot=snap))
+        if any(set(c["source_ids"]) == sids for c in live):        # already claimed
+            continue
+        grown = [c for c in live if set(c["source_ids"]) < sids]   # same cluster, more evidence now
+        old = max(grown, key=lambda c: c["revision"]) if grown else None
+        made.append(store.propose_claim(scope, summarize(group), sorted(sids), snapshot=snap,
+                                        supersedes=old["id"] if old else None,
+                                        revision=old["revision"] + 1 if old else 1))
+        for c in grown:
+            store.set_claim(c["id"], status="superseded")          # kept, marked
     return made
 
-# --- contradiction_review: flag highly-similar-but-differing claims; preserve both ---
+# --- contradiction_review: flag similar claims that each assert something different; preserve both ---
 def contradiction_review(store, scope, sim=0.6):
-    """Flag pairs of claims that share a subject but assert different specifics."""
-    cs = store.claims(scope); flagged = set()
+    """Flag pairs of live claims that share a subject but EACH assert something the
+    other does not. Not contradictions: a claim that only adds detail to another, a
+    superseded revision, and a correction paired with the claim it supersedes.
+
+    Lexical only — it cannot see conflicts that are worded differently
+    ("the api is stable" vs "the api keeps crashing"); that needs a model."""
+    cs = [c for c in store.claims(scope) if c["status"] != "superseded"]
+    flagged = set()
     for i in range(len(cs)):
         for j in range(i + 1, len(cs)):
-            a, b = _toks(cs[i]["claim"]), _toks(cs[j]["claim"])
-            if a != b and _jaccard(a, b) >= sim:       # same subject, differing value
-                flagged.add(cs[i]["id"]); flagged.add(cs[j]["id"])
+            x, y = cs[i], cs[j]
+            if x["supersedes"] == y["id"] or y["supersedes"] == x["id"]:
+                continue
+            a, b = _toks(x["claim"]), _toks(y["claim"])
+            if (a - b) and (b - a) and _jaccard(a, b) >= sim:      # same subject, two-sided difference
+                flagged.add(x["id"]); flagged.add(y["id"])
     for cid in flagged:
-        store.set_claim(cid, status="contradicted")    # kept, not deleted
+        store.set_claim(cid, status="contradicted")                # kept, not deleted
     return sorted(flagged)
 
 # --- evaluation gate: approve a candidate only if still valid against its snapshot ---
 def approve_claim(store, scope, claim_id):
-    """Stand-in for the evaluation stage: approve iff not contradicted and the
-    episodic snapshot still matches the one the proposal was built against."""
+    """Stand-in for the evaluation stage: approve iff the claim is not contradicted,
+    every source id resolves to a live episode, and the episodic snapshot still
+    matches the one the proposal was built against."""
     c = next((c for c in store.claims(scope) if c["id"] == claim_id), None)
     if c is None or c["status"] == "contradicted":
+        return False
+    if not store.resolves(scope, c["source_ids"]):                 # derived records need resolvable provenance
         return False
     if c["snapshot"] and c["snapshot"] != store.snapshot(scope):   # store changed -> revalidate, don't overwrite
         return False
@@ -113,18 +143,20 @@ class Releases:
         os.replace(tmp, self.active)              # atomic pointer swap
     def publish(self, store, scope, model=None, embed=None, adapter=None):
         """Pin approved claims + lineage into a new, immutable manifest and publish it.
-        `adapter` is the deployed adapter id (Stage 4) or None for a store-only release."""
+        `adapter` is the deployed adapter id (Stage 4) or None for a store-only release.
+        If nothing changed since the active release, that release is returned as-is."""
+        approved = store.claims(scope, status="approved")
+        pins = {"workspace": scope, "policy": "v0.1", "model": model,
+                "adapter": adapter, "retrieval": embed, "permissions": "default"}
+        memory = [{"claim_id": c["id"], "claim": c["claim"], "revision": c["revision"],
+                   "supersedes": c["supersedes"], "source_ids": c["source_ids"]} for c in approved]
+        cur = self.active_manifest()
+        if cur and cur["memory"] == memory and cur["pins"] == pins:
+            return cur["id"]                      # identical content: don't mint a duplicate release
         prev = self._read_active().get("release_id")
         rid = "release_%04d" % sum(1 for f in os.listdir(self.manifests) if f.endswith(".json"))
-        approved = store.claims(scope, status="approved")
-        manifest = {
-            "id": rid, "ts": time.time(), "previous_release": prev,
-            "pins": {"workspace": scope, "policy": "v0.1", "model": model,
-                     "adapter": adapter, "retrieval": embed, "permissions": "default"},
-            "memory": [{"claim_id": c["id"], "claim": c["claim"], "revision": c["revision"],
-                        "supersedes": c["supersedes"], "source_ids": c["source_ids"]} for c in approved],
-            "source_ids": sorted({s for c in approved for s in c["source_ids"]}),
-        }
+        manifest = {"id": rid, "ts": time.time(), "previous_release": prev, "pins": pins, "memory": memory,
+                    "source_ids": sorted({s for c in approved for s in c["source_ids"]})}
         path = os.path.join(self.manifests, rid + ".json"); tmp = path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(manifest, f, indent=2)

@@ -71,3 +71,42 @@ def test_online_loop_unaffected_by_background():
     r = Runner(); r.step("setup", "the project release label is cedar-rt42")
     bg.run_background(r.store, "default")                      # store-only; no weights to change
     assert r.store.search("default", "what release label did i give you?", 3)  # still recalls
+
+def test_pipeline_is_repeat_safe(tmp_path):
+    s = Store(); _seed(s); rel = bg.Releases(str(tmp_path))
+    first = bg.run_background(s, "default", releases=rel)
+    for _ in range(3):                                        # unchanged store: nothing new proposed or published
+        again = bg.run_background(s, "default", releases=rel)
+        assert again["claims"] == [] and again["release"] == first["release"]
+    assert len(s.claims("default")) == 1 and len(list((tmp_path / "manifests").iterdir())) == 1
+
+def test_grown_cluster_supersedes_instead_of_duplicating():
+    s = Store(); _seed(s)
+    first = bg.run_background(s, "default")["claims"][0]
+    s.append("default", "experience", "deploy needs the staging config and token rotation", "ok")
+    second = bg.run_background(s, "default")["claims"][0]
+    byid = {c["id"]: c for c in s.claims("default")}
+    assert byid[first]["status"] == "superseded"              # old revision kept, marked
+    assert byid[second]["status"] == "approved" and byid[second]["supersedes"] == first
+    assert byid[second]["revision"] == 2 and len(byid[second]["source_ids"]) == 3
+
+def test_correction_survives_contradiction_review():
+    s = Store(); _seed(s)
+    old = bg.consolidate(s, "default")[0]; bg.approve_claim(s, "default", old)
+    c = next(c for c in s.claims("default") if c["id"] == old)
+    new = bg.revise_claim(s, "default", old, c["claim"].replace("before", "after"), c["source_ids"])
+    assert bg.contradiction_review(s, "default") == []         # a correction is not a contradiction of what it replaces
+    assert bg.approve_claim(s, "default", new) is True
+    byid = {c["id"]: c for c in s.claims("default")}
+    assert byid[old]["status"] == "superseded" and byid[new]["status"] == "approved"
+
+def test_claim_that_only_adds_detail_is_not_a_contradiction():
+    s = Store()
+    s.propose_claim("default", "the production release label is cedar bbb222", ["x1", "x2"])
+    s.propose_claim("default", "production release label is cedar bbb222 confirmed", ["y1", "y2"])
+    assert bg.contradiction_review(s, "default") == []
+
+def test_unresolvable_provenance_cannot_be_approved():
+    s = Store()
+    cid = s.propose_claim("default", "the moon is made of cheese", ["no-such-episode-1", "no-such-episode-2"])
+    assert bg.approve_claim(s, "default", cid) is False

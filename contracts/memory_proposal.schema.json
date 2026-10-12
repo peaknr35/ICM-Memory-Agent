@@ -1,23 +1,42 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "memory_proposal",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MemoryProposal",
   "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "ts",
+    "observation_id",
+    "scope",
+    "target",
+    "decision",
+    "reason",
+    "source_ids"
+  ],
   "properties": {
-    "id": {
-      "type": "string"
+    "schema_version": { "const": "1.0" },
+    "id": { "type": "string", "minLength": 1 },
+    "ts": { "type": "number" },
+    "observation_id": { "type": "string", "minLength": 1 },
+    "scope": { "type": "string", "minLength": 1 },
+    "target": { "enum": ["episodic", "working", "none"] },
+    "decision": { "enum": ["append", "skip"] },
+    "reason": {
+      "enum": [
+        "new_observation",
+        "ephemeral",
+        "query_not_fact",
+        "duplicate_in_session",
+        "invalid_observation"
+      ]
     },
-    "ts": {
-      "type": "number"
-    },
+    "episode_id": { "type": "string", "minLength": 1 },
     "source_ids": {
       "type": "array",
-      "items": {
-        "type": "string"
-      }
-    }
-  },
-  "required": [
-    "id",
-    "ts"
-  ]
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "errors": { "type": "array", "items": { "type": "string" } }
+  }
 }

@@ -1,10 +1,16 @@
+[build-system]
+requires=["setuptools>=61"]
+build-backend="setuptools.build_meta"
 [project]
 name="icm-agent"
 version="0.1.0"
 requires-python=">=3.10"
 [project.optional-dependencies]
-claude=["anthropic>=0.40"]
+claude=["anthropic>=1.0"]
 embeddings=["sentence-transformers>=3"]
+dev=["pytest"]
 # ollama + gemini + voyage backends (llm and embeddings) use only the standard library (HTTP)
+[tool.setuptools]
+packages=["runtime"]
 [tool.pytest.ini_options]
 pythonpath=["."]

@@ -12,16 +12,12 @@ opt-in; real backends resolve keys/clients on first call (matches models.py).
 Note: Anthropic has no first-party embeddings API, so there is no 'claude'
 backend — use 'voyage' (Voyage AI, Anthropic's recommended embeddings provider).
 """
-import os, re, json, math, hashlib, urllib.request
+import os, re, math, hashlib
+from .env import load_env
+from .models import _post
 
 DIM = 256
 _TOK = re.compile(r"[a-z0-9]+")
-
-def _post(url, payload, headers, timeout=60):
-    body = json.dumps(payload).encode()
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.load(r)
 
 def _l2(v):
     n = math.sqrt(sum(x * x for x in v))
@@ -52,7 +48,7 @@ def ollama_embed(model=None, host=None):
 
 def gemini_embed(model=None):
     """Google Gemini embeddings (key in header, not URL; resolved on first call)."""
-    model = model or os.getenv("GEMINI_EMBED_MODEL", "text-embedding-004")
+    model = model or os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-001")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:embedContent"
     def _embed(text):
         key = os.environ["GEMINI_API_KEY"]
@@ -63,7 +59,7 @@ def gemini_embed(model=None):
 
 def voyage_embed(model=None):
     """Voyage AI embeddings — Anthropic's recommended provider (Claude has no embeddings API)."""
-    model = model or os.getenv("VOYAGE_MODEL", "voyage-3")
+    model = model or os.getenv("VOYAGE_MODEL", "voyage-4")
     def _embed(text):
         key = os.environ["VOYAGE_API_KEY"]
         out = _post("https://api.voyageai.com/v1/embeddings", {"model": model, "input": [text]},
@@ -92,6 +88,7 @@ EMBEDDERS = {
 
 def make_embedder(backend=None):
     """Return an embedder callable, or the string 'keyword' for the legacy scorer."""
+    load_env()
     backend = backend or os.getenv("MEMORY_EMBED_BACKEND", "hash")
     if backend == "keyword":
         return "keyword"
