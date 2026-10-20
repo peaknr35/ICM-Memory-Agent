@@ -18,6 +18,7 @@ agent-generated assertion stays `agent` and cannot be relabeled as user evidence
 import time, uuid
 from .contracts import validate
 from .router import route
+from .kb_retriever import is_kb_id
 
 def _is_query(obs):
     """Only the unambiguous case: ends with '?'. Statements like 'When deploying, rotate
@@ -44,6 +45,8 @@ def propose(store, scope, obs, ephemeral=False):
 
 def write(store, scope, obs, outcome="", ephemeral=False):
     """Propose, check the proposal against its own contract, then apply it. Returns the proposal."""
+    if isinstance(obs, dict) and (is_kb_id(obs.get("id")) or obs.get("origin") == "kb"):
+        raise ValueError("a knowledge-base document cannot be written as an episode")  # KB is evidence only
     p = propose(store, scope, obs, ephemeral)
     errs = validate("memory_proposal", p)
     if errs:

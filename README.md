@@ -34,6 +34,8 @@ Retrieved items are marked untrusted, and any that contain a short list of known
 | `policies/` | 7 policies: evidence, trust boundaries, memory revision, consolidation, training eligibility, release & rollback, retention & deletion. |
 | `releases/` | `active.json` points at the active memory release; `manifests/` holds versioned releases. |
 | `runtime/` | The Python enforcement layer (below). |
+| `kb/` | Personal knowledge base (Gmail, Claude Code sessions, notes) as its own ICM workspace with numbered stages. A read-only evidence source for the agent; see [Knowledge base](#knowledge-base-read-only-evidence). |
+| `archive/` | The earlier `kb-starter/` prototype and the original `kb.zip`, kept for reference. Unused. |
 
 ## Runtime (v0.1)
 
@@ -112,6 +114,24 @@ To install the package from a clone: `pip install -e .` (or `pip install -e ".[c
 5. **release_manager** (`Releases`) — pin the approved claims + lineage into an immutable, versioned manifest (`manifests/release_NNNN.json`) and publish it atomically via `active.json`; `rollback()` repoints to the previous release. Publishing when nothing has changed returns the current release instead of minting a copy. Manifests pin workspace/policy/memory/model/adapter/retrieval/permissions — `adapter` is always `null` here (weights are Stage 4).
 
 `learning_proposer` / `learning_validator` (adapter training) are Stage 4, below.
+
+## Knowledge base (read-only evidence)
+
+`kb/` indexes your own data (Gmail, Claude Code sessions, a notes folder) into `kb/kb.sqlite` with plain keyword search (FTS5 + bm25, no embeddings). It runs on its own schedule, in its own process, and has its own setup guide (`kb/setup/README.md`). The agent can **read** it as evidence. It never **writes** KB rows as memory:
+
+- `runtime/kb_retriever.py` opens the KB with SQLite `mode=ro` and reuses `kb/kb.py`'s ranking. Every hit carries `origin="kb"` and a stable id `kb:<source>:<source_id>`.
+- `Runner(kb=KBRetriever(sources=[...]))` fuses episode hits and KB hits by rank (RRF). KB hits pass through the same untrusted marking and injection filter. The KB is off unless you pass it in, and any scope you pass it to sees the whole KB (narrow it with `sources=`).
+- `memory_writer` refuses anything with a `kb:` id. A KB refresh of any size creates zero episodes.
+- `Runner.remember(conclusion, evidence_ids)` stores the agent's own conclusion as an episode that cites KB rows **by pointer**. It may only cite ids retrieved earlier in the same session.
+- Consolidation carries those pointers into a claim's `kb_refs`. `source_ids` stay episodes only, so the ≥2 episodes rule and the delete cascade are unchanged. `run_background(..., kb=KBRetriever())` approves a KB-citing claim only if every pointer still resolves. A missing pointer blocks approval but never deletes the claim; `evidence_report()` shows what is missing.
+
+```python
+from runtime.runner import Runner
+from runtime.kb_retriever import KBRetriever
+r = Runner(kb=KBRetriever(sources=["gmail", "claude_code"]))
+```
+
+`tests/test_kb_integration.py` locks the invariant down (zero episodes from a KB refresh, read-only connection, writer guard, injection filter, no `kb/` code imports the write gate).
 
 ## Adapter training (Stage 4 — the gated path to weight changes)
 

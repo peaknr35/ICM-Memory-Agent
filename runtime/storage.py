@@ -6,10 +6,10 @@ class Store:
         self.db=sqlite3.connect(path)
         self.db.executescript("""
         CREATE TABLE IF NOT EXISTS episodes(id TEXT PRIMARY KEY, ts REAL, scope TEXT, kind TEXT, text TEXT, outcome TEXT, source_ids TEXT, emb TEXT, deleted INT DEFAULT 0, session TEXT, source_kind TEXT);
-        CREATE TABLE IF NOT EXISTS derived(id TEXT PRIMARY KEY, ts REAL, scope TEXT, claim TEXT, source_ids TEXT, status TEXT, revision INT, snapshot TEXT, supersedes TEXT);
+        CREATE TABLE IF NOT EXISTS derived(id TEXT PRIMARY KEY, ts REAL, scope TEXT, claim TEXT, source_ids TEXT, status TEXT, revision INT, snapshot TEXT, supersedes TEXT, kb_refs TEXT);
         """)
         self._migrate("episodes",{"emb":"TEXT","session":"TEXT","source_kind":"TEXT"})  # old DBs predate these
-        self._migrate("derived",{"snapshot":"TEXT","supersedes":"TEXT"})                 # ...and the claim lifecycle
+        self._migrate("derived",{"snapshot":"TEXT","supersedes":"TEXT","kb_refs":"TEXT"}) # ...the claim lifecycle, KB pointers
         self.embed=embedder if embedder is not None else make_embedder()  # callable=vector, "keyword"=legacy
     def _migrate(self, table, cols):
         have=[r[1] for r in self.db.execute(f"PRAGMA table_info({table})")]
@@ -61,14 +61,15 @@ class Store:
             if ep_id in json.loads(src): self.db.execute("DELETE FROM derived WHERE id=?",(i,))
         self.db.commit()
     # --- derived semantic claims (separate from raw episodes; cite sources) ---
-    def propose_claim(self, scope, claim, source_ids, snapshot=None, supersedes=None, status="candidate", revision=1):
+    def propose_claim(self, scope, claim, source_ids, snapshot=None, supersedes=None, status="candidate", revision=1, kb_refs=()):
+        """source_ids are episodes (cascade on delete); kb_refs are read-only KB pointers (never cascade)."""
         i=str(uuid.uuid4())
-        self.db.execute("INSERT INTO derived(id,ts,scope,claim,source_ids,status,revision,snapshot,supersedes) VALUES(?,?,?,?,?,?,?,?,?)",
-            (i,time.time(),scope,claim,json.dumps(list(source_ids)),status,revision,snapshot,supersedes)); self.db.commit(); return i
+        self.db.execute("INSERT INTO derived(id,ts,scope,claim,source_ids,status,revision,snapshot,supersedes,kb_refs) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (i,time.time(),scope,claim,json.dumps(list(source_ids)),status,revision,snapshot,supersedes,json.dumps(sorted(set(kb_refs))))); self.db.commit(); return i
     def claims(self, scope, status=None):
-        q="SELECT id,claim,source_ids,status,revision,snapshot,supersedes FROM derived WHERE scope=?"; a=[scope]
+        q="SELECT id,claim,source_ids,status,revision,snapshot,supersedes,kb_refs FROM derived WHERE scope=?"; a=[scope]
         if status: q+=" AND status=?"; a.append(status)
-        return [dict(id=r[0],claim=r[1],source_ids=json.loads(r[2]),status=r[3],revision=r[4],snapshot=r[5],supersedes=r[6])
+        return [dict(id=r[0],claim=r[1],source_ids=json.loads(r[2]),status=r[3],revision=r[4],snapshot=r[5],supersedes=r[6],kb_refs=json.loads(r[7] or "[]"))
                 for r in self.db.execute(q+" ORDER BY ts",a)]
     def set_claim(self, claim_id, **fields):
         if not fields: return

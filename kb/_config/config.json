@@ -1,0 +1,47 @@
+{
+  "sources": {
+    "gmail": {
+      "enabled": true,
+      "accounts": ["personal"],
+      "first_run_days": 365,
+      "rerun_overlap_days": 3,
+      "query_extra": "-in:spam -in:trash -category:promotions -category:social",
+      "max_threads_per_run": 0
+    },
+    "claude_code": {
+      "enabled": true,
+      "projects_dir": "~/.claude/projects",
+      "max_tool_result_chars": 1500
+    },
+    "notes": {
+      "enabled": false,
+      "folders": [],
+      "extensions": [".md", ".txt"]
+    }
+  },
+  "chunking": {
+    "long_threshold_chars": 6000,
+    "raw_chunk_chars": 4000
+  },
+  "summarize": {
+    "auto_summarize": false,
+    "model": "claude-haiku-5-5",
+    "max_input_chars": 300000,
+    "max_output_tokens": 4000,
+    "min_idle_hours": 2,
+    "max_items_per_run": 200,
+    "price_per_mtok_input": 0.10,
+    "price_per_mtok_output": 0.50,
+    "price_note": "Haiku 5.5 list price for prompts up to 100k tokens, checked 2026-10-18. Prompts over 100k tokens cost 5x."
+  },
+  "search": {
+    "rrf_k": 60,
+    "raw_weight": 0.5,
+    "recency_halflife_days": 180,
+    "recency_weight": 0.3,
+    "superseded_factor": 0.5,
+    "candidates_per_list": 60,
+    "default_limit": 8,
+    "stale_after_hours": 12
+  }
+}

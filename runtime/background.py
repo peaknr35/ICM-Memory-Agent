@@ -11,6 +11,11 @@ Invariants (policies/):
 - Proposals are candidates until approved; approval requires provenance that
   resolves to live episodes and revalidates the snapshot the proposal was built
   against, so a changed store is never silently overwritten.
+- KB evidence is cited by pointer (`kb_refs`, e.g. "kb:gmail:<thread>"), never copied.
+  A claim's `source_ids` stay episodes only, so the >= 2 episodes rule and the delete
+  cascade are unchanged. A claim citing KB rows is approved only if every pointer
+  still resolves; a missing one blocks approval but never deletes the claim —
+  that is a human decision (evidence_report shows what is missing).
 - Contradictions preserve BOTH claims and their sources, flagged not deleted.
 - Corrections are new revisions that supersede; the old revision is kept
   (memory_revision.md).
@@ -20,6 +25,7 @@ Invariants (policies/):
   nothing new and publishes nothing new.
 """
 import os, re, json, time
+from .kb_retriever import is_kb_id
 
 _TOK = re.compile(r"[a-z0-9]+")
 _STOP = frozenset("the and for with that this are was were has have had not but you your our its "
@@ -71,9 +77,11 @@ def consolidate(store, scope, summarize=_summarize):
             continue
         grown = [c for c in live if set(c["source_ids"]) < sids]   # same cluster, more evidence now
         old = max(grown, key=lambda c: c["revision"]) if grown else None
+        kb_refs = {r for e in group for r in e["source_ids"] if is_kb_id(r)}   # KB rows the episodes cited
         made.append(store.propose_claim(scope, summarize(group), sorted(sids), snapshot=snap,
                                         supersedes=old["id"] if old else None,
-                                        revision=old["revision"] + 1 if old else 1))
+                                        revision=old["revision"] + 1 if old else 1,
+                                        kb_refs=kb_refs | set(old["kb_refs"] if old else ())))
         for c in grown:
             store.set_claim(c["id"], status="superseded")          # kept, marked
     return made
@@ -101,25 +109,40 @@ def contradiction_review(store, scope, sim=0.6):
     return sorted(flagged)
 
 # --- evaluation gate: approve a candidate only if still valid against its snapshot ---
-def approve_claim(store, scope, claim_id):
+def approve_claim(store, scope, claim_id, kb=None):
     """Stand-in for the evaluation stage: approve iff the claim is not contradicted,
-    every source id resolves to a live episode, and the episodic snapshot still
+    every source id resolves to a live episode, every KB pointer resolves in `kb`
+    (no kb to check against -> not approved), and the episodic snapshot still
     matches the one the proposal was built against."""
     c = next((c for c in store.claims(scope) if c["id"] == claim_id), None)
     if c is None or c["status"] == "contradicted":
         return False
     if not store.resolves(scope, c["source_ids"]):                 # derived records need resolvable provenance
         return False
+    if c["kb_refs"] and (kb is None or not all(kb.exists(r) for r in c["kb_refs"])):
+        return False                                               # KB evidence missing/unverifiable: stays a candidate
     if c["snapshot"] and c["snapshot"] != store.snapshot(scope):   # store changed -> revalidate, don't overwrite
         return False
     store.set_claim(claim_id, status="approved")
     return True
 
+def evidence_report(store, scope, claim_id, kb=None):
+    """What a reviewer sees: which cited episodes / KB rows no longer resolve.
+    `kb_unverified` is True when the claim cites KB rows but no kb was given to check."""
+    c = next(c for c in store.claims(scope) if c["id"] == claim_id)
+    live = {e["id"] for e in store.episodes(scope)}
+    return {"claim_id": claim_id, "status": c["status"],
+            "missing_episodes": [i for i in c["source_ids"] if i not in live],
+            "missing_kb": [r for r in c["kb_refs"] if kb is not None and not kb.exists(r)],
+            "kb_unverified": bool(c["kb_refs"]) and kb is None}
+
 # --- memory_revision: a correction supersedes an old claim as a new revision ---
-def revise_claim(store, scope, old_claim_id, new_text, source_ids):
+def revise_claim(store, scope, old_claim_id, new_text, source_ids, kb_refs=None):
+    """kb_refs=None carries the old revision's KB pointers forward; pass [] to drop them."""
     old = next(c for c in store.claims(scope) if c["id"] == old_claim_id)
     nid = store.propose_claim(scope, new_text, source_ids, snapshot=store.snapshot(scope),
-                              supersedes=old_claim_id, revision=old["revision"] + 1)
+                              supersedes=old_claim_id, revision=old["revision"] + 1,
+                              kb_refs=old["kb_refs"] if kb_refs is None else kb_refs)
     store.set_claim(old_claim_id, status="superseded")   # old revision kept, marked
     return nid
 
@@ -149,7 +172,8 @@ class Releases:
         pins = {"workspace": scope, "policy": "v0.1", "model": model,
                 "adapter": adapter, "retrieval": embed, "permissions": "default"}
         memory = [{"claim_id": c["id"], "claim": c["claim"], "revision": c["revision"],
-                   "supersedes": c["supersedes"], "source_ids": c["source_ids"]} for c in approved]
+                   "supersedes": c["supersedes"], "source_ids": c["source_ids"],
+                   **({"kb_refs": c["kb_refs"]} if c["kb_refs"] else {})} for c in approved]  # key only when used: old manifests still compare equal
         cur = self.active_manifest()
         if cur and cur["memory"] == memory and cur["pins"] == pins:
             return cur["id"]                      # identical content: don't mint a duplicate release
@@ -180,10 +204,10 @@ class Releases:
             return json.load(f)
 
 # --- orchestration (routing.yaml background order, minus Stage-4 learning_*) ---
-def run_background(store, scope, releases=None, approve=True, model=None, embed_backend=None):
+def run_background(store, scope, releases=None, approve=True, model=None, embed_backend=None, kb=None):
     made = consolidate(store, scope)                              # replay_selector + consolidation
     contradicted = set(contradiction_review(store, scope))
     approved = [cid for cid in made
-                if cid not in contradicted and approve_claim(store, scope, cid)] if approve else []
+                if cid not in contradicted and approve_claim(store, scope, cid, kb)] if approve else []
     release = releases.publish(store, scope, model=model, embed=embed_backend) if releases is not None else None
     return {"claims": made, "contradicted": sorted(contradicted), "approved": approved, "release": release}

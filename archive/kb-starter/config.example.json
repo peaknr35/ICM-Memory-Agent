@@ -1,0 +1,13 @@
+{
+  "sources": ["slack", "gmail", "github", "youtube"],
+  "gmail": {
+    "accounts": ["work", "personal"],
+    "per_account": 100,
+    "query": "newer_than:90d -category:promotions"
+  },
+  "youtube": {
+    "handle": "@yourhandle",
+    "max_videos": 30,
+    "transcripts": 10
+  }
+}

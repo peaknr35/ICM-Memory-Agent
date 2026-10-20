@@ -1,0 +1,6 @@
+.env
+config.json
+secrets/
+*.sqlite
+__pycache__/
+.venv/

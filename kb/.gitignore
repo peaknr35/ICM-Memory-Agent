@@ -1,0 +1,13 @@
+# private data and credentials: never commit
+kb.sqlite
+kb.sqlite-*
+*.sqlite
+.env
+secrets/*
+!secrets/.gitkeep
+logs/*
+!logs/.gitkeep
+stages/*/output/*
+!stages/*/output/.gitkeep
+__pycache__/
+.venv/
